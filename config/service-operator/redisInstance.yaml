@@ -1,0 +1,142 @@
+apiVersion: secretgen.k14s.io/v1alpha1
+kind: Password
+metadata:
+  name: cache-where-for-dinner-redis-password
+  namespace: service-instances
+spec:
+  length: 64
+  secretTemplate:
+    type: Opaque
+    stringData:
+      password: $(value)
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cache-where-for-dinner
+  namespace: service-instances
+  labels:
+    app: where-for-dinner
+    service: cache-where-for-dinner
+spec:
+  ports:
+  - port: 6379
+    name: redis
+  selector:
+    app: where-for-dinner
+    service: cache-where-for-dinner
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cache-where-for-dinner
+  namespace: service-instances
+  labels:
+    app: where-for-dinner
+    service: cache-where-for-dinner
+spec:
+  selector:
+    matchLabels:
+      app: where-for-dinner
+      service: cache-where-for-dinner
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: where-for-dinner
+        service: cache-where-for-dinner
+    spec:
+      containers:
+      - name: redis
+        image: bitnami/redis
+        imagePullPolicy: Always
+        resources:
+          requests:
+            cpu: 100m
+            memory: 100Mi
+        ports:
+        - name: redis
+          containerPort: 6379
+          protocol: TCP
+        env:
+        - name: REDIS_HOST
+          value: cache-where-for-dinner
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: cache-where-for-dinner-redis-password
+              key: password
+        volumeMounts:
+        - mountPath: /var/lib/redis
+          name: redis-data
+      volumes:
+      - name: redis-data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bitnami-redis-secret-template-reader
+  namespace: service-instances
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bitnami-redis-secret-template-reader
+  namespace: service-instances
+rules:
+- apiGroups:
+  - '*'
+  resources:
+  - secrets
+  - services
+  - redis
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bitnami-redis-secret-template-reader
+  namespace: service-instances
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: bitnami-redis-secret-template-reader
+subjects:
+- kind: ServiceAccount
+  name: bitnami-redis-secret-template-reader
+---
+apiVersion: secretgen.carvel.dev/v1alpha1
+kind: SecretTemplate
+metadata:
+  name: cache-where-for-dinner-redis-secret
+  namespace: service-instances
+spec:
+  serviceAccountName: bitnami-redis-secret-template-reader
+  inputResources:
+  - name: redis-service
+    ref:
+      apiVersion: v1
+      kind: Service
+      name: cache-where-for-dinner
+  - name: creds
+    ref:
+      apiVersion: v1
+      kind: Secret
+      name: cache-where-for-dinner-redis-password
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: redis
+        app.kubernetes.io/instance: cache-where-for-dinner
+        services.apps.tanzu.vmware.com/class: bitnami-redis
+    stringData:
+      port: $(.redis-service.spec.ports[?(@.name=="redis")].port)
+      host: cache-where-for-dinner.service-instances
+      provider: bitnami
+      type: redis
+    data:
+      password: $(.creds.data.password)
